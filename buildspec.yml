@@ -1,0 +1,32 @@
+version: 0.2
+
+env:
+  variables:
+    SCRIPT_FILE: "snapshot_automated_aws.sh"   # rename if needed
+    SERVER_LIST_FILE: "serverlist_v2.txt"
+    MODE: "DRY_RUN"                            # overridden per CodeBuild project
+
+phases:
+  install:
+    commands:
+      - echo "Install phase"
+      - chmod +x "$SCRIPT_FILE"
+
+  build:
+    commands:
+      - |
+        echo "MODE = $MODE"
+        if [ "$MODE" = "DRY_RUN" ]; then
+          echo "Running snapshot script in DRY-RUN mode..."
+          ./"$SCRIPT_FILE" "$SERVER_LIST_FILE" --dry-run
+        elif [ "$MODE" = "RUN" ]; then
+          echo "Running snapshot script in RUN mode..."
+          ./"$SCRIPT_FILE" "$SERVER_LIST_FILE" --run
+        else
+          echo "ERROR: Unknown MODE: $MODE"
+          exit 1
+        fi
+
+artifacts:
+  files:
+    - '**/*'
