@@ -1,0 +1,36 @@
+version: 0.2
+
+env:
+  variables:
+    CLEANUP_SCRIPT_FILE: "snapshot_cleanup_aws.sh"  # AWS version of snapshot_cleanup_scheduled.sh
+    CLEANUP_REGION: "ap-south-1"                    # change if needed
+    MODE: "DRY_RUN"                                 # overridden per CodeBuild project
+
+phases:
+  install:
+    commands:
+      - echo "Install phase for cleanup"
+      - chmod +x "$CLEANUP_SCRIPT_FILE"
+
+  build:
+    commands:
+      - echo "Cleanup MODE = $MODE"
+      - echo "Cleanup REGION = $CLEANUP_REGION"
+      - |
+        if [ "$MODE" = "DRY_RUN" ]; then
+          echo "===== DRY RUN MODE — NO SNAPSHOTS WILL BE DELETED ====="
+          CMD="./$CLEANUP_SCRIPT_FILE --region \"$CLEANUP_REGION\""
+        elif [ "$MODE" = "RUN" ]; then
+          echo "===== RUN MODE — SNAPSHOTS WILL BE DELETED ====="
+          CMD="./$CLEANUP_SCRIPT_FILE --run --region \"$CLEANUP_REGION\""
+        else
+          echo "ERROR: Unknown MODE: $MODE"
+          exit 1
+        fi
+
+        echo "Executing: $CMD"
+        eval $CMD
+
+artifacts:
+  files:
+    - '**/*'
