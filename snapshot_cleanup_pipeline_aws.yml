@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CodePipeline + CodeBuild pipeline for snapshot cleanup (equivalent to azure_pipeline_cleanup.yml)
+
+Parameters:
+  GitHubConnectionArn:
+    Type: String
+    Description: CodeStar Connections ARN for GitHub
+  GitHubOwner:
+    Type: String
+    Description: GitHub owner/user or org (e.g. Tushar1418)
+  GitHubRepo:
+    Type: String
+    Description: GitHub repo name (e.g. snapshot_automation_aws)
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: Git branch to build from
+  ArtifactBucketName:
+    Type: String
+    Description: Existing S3 bucket for CodePipeline artifacts (must already exist)
+  CleanupRegion:
+    Type: String
+    Default: ap-south-1
+    Description: AWS region where snapshots will be cleaned
+
+Resources:
+
+  ############################################
+  # IAM ROLE FOR CODEBUILD
+  ############################################
+  CleanupCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        - PolicyName: SnapshotCleanupManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSnapshots
+                  - ec2:DeleteSnapshot
+                  - ec2:DescribeTags
+                  - ec2:CreateTags
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}/*
+
+  ############################################
+  # IAM ROLE FOR CODEPIPELINE
+  ############################################
+  CleanupCodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: CleanupCodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}
+                  - !Sub arn:aws:s3:::${ArtifactBucketName}/*
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+
+  ############################################
+  # CODEBUILD PROJECT - DRY RUN CLEANUP
+  ############################################
+  CleanupDryRunBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: snapshot-cleanup-dryrun-build
+      ServiceRole: !GetAtt CleanupCodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: MODE
+            Value: DRY_RUN
+          - Name: CLEANUP_SCRIPT_FILE
+            Value: snapshot_cleanup_aws.sh
+          - Name: CLEANUP_REGION
+            Value: !Ref CleanupRegion
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec_cleanup.yml
+      TimeoutInMinutes: 30
+
+  ############################################
+  # CODEBUILD PROJECT - RUN CLEANUP
+  ############################################
+  CleanupRunBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: snapshot-cleanup-run-build
+      ServiceRole: !GetAtt CleanupCodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: MODE
+            Value: RUN
+          - Name: CLEANUP_SCRIPT_FILE
+            Value: snapshot_cleanup_aws.sh
+          - Name: CLEANUP_REGION
+            Value: !Ref CleanupRegion
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec_cleanup.yml
+      TimeoutInMinutes: 30
+
+  ############################################
+  # CODEPIPELINE FOR CLEANUP
+  ############################################
+  SnapshotCleanupPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: snapshot-cleanup-pipeline
+      RoleArn: !GetAtt CleanupCodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucketName
+      Stages:
+        # 1) SOURCE
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Sub "${GitHubOwner}/${GitHubRepo}"
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+        # 2) DRY RUN CLEANUP
+        - Name: DryRunCleanup
+          Actions:
+            - Name: DryRunCleanupBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: DryRunCleanupOutput
+              Configuration:
+                ProjectName: !Ref CleanupDryRunBuild
+              RunOrder: 1
+
+        # 3) MANUAL APPROVAL
+        - Name: CleanupApproval
+          Actions:
+            - Name: CleanupManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              RunOrder: 1
+
+        # 4) RUN CLEANUP
+        - Name: RunCleanup
+          Actions:
+            - Name: RunCleanupBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: RunCleanupOutput
+              Configuration:
+                ProjectName: !Ref CleanupRunBuild
+              RunOrder: 1
+
+Outputs:
+  CleanupPipelineName:
+    Value: !Ref SnapshotCleanupPipeline
+    Description: Name of the created cleanup CodePipeline
