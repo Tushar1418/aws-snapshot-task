@@ -1,0 +1,41 @@
+# ==================================================================================
+# SERVERLIST V2 FORMAT  (AWS VERSION)
+# ==================================================================================
+# Field1  : Target (EC2 instance-id OR EC2 Name tag OR EBS volume-id)
+# Field2  : AWS Region (e.g., ap-south-1, us-east-1)
+# Field3  : Snapshot Type (Incremental / Full / incr / inc / f / full)
+# Field4  : Retention Days (numeric only)
+# Field5  : Snapshot Scope (OS / Data / Both)
+#           - For instances:
+#               OS   = only root volume
+#               Data = only non-root attached volumes
+#               Both = root + all data volumes
+#           - For direct volume targets: treated as DISK (Field5 still required but kind=DISK)
+# Field6  : Reason for backup (free text)
+# ==================================================================================
+# Notes:
+# - Spaces around semicolons DO NOT matter (same as Azure script).
+# - You may enter:
+#       - EC2 instance-id (e.g., i-0abc1234567)
+#       - EC2 instance Name tag (e.g., web-01)
+#       - EBS volume-id (e.g., vol-0abcfed123)
+# - SnapshotType supports synonyms: inc, incr, incremental, full, f
+# - Scope must be exactly one of: OS, Data, Both  (case-insensitive)
+# - RetentionDays is stored as a tag on each snapshot.
+# - Every line can create 1 or more snapshots for that target.
+# ==================================================================================
+
+# EXAMPLES
+
+# Case 1: Normal EC2 instance (root only, 7 days retention)
+web-01;ap-south-1;Incremental;7;OS;daily backup before patch
+
+# Case 2: Instance-id with extra spacing
+i-0aa11bb22cc33dd44  ;   ap-south-1  ; Full ; 14 ; Both ; monthly full backup
+
+# Case 3: Volume snapshot directly (volume-id)
+vol-0a1b2c3d4e5f6a7b ; ap-south-1 ; Full ; 7 ; OS ; backup of standalone volume
+
+# Case 4: Type synonyms
+web-01;ap-south-1;incr;7;OS;test incremental synonym
+web-01;ap-south-1;f;7;OS;test full synonym
